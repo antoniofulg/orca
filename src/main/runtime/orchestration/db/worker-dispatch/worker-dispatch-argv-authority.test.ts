@@ -79,15 +79,48 @@ describe('argv worker authority: mint before spawn, bind after', () => {
     )
   })
 
+  it('refuses to bind when the durable launch-token commitment is absent', () => {
+    const { d, dispatchId } = startDispatch()
+    const capability = d.mintStartingWorkerCapability({ dispatchId })
+    expect(() => d.bindStartingWorkerAuthority(bindParams(dispatchId))).toThrow(
+      /launch-token commitment does not match/
+    )
+    expect(d.getDispatchContextById(dispatchId)).toMatchObject({
+      assignee_handle: null,
+      assignee_pane_key: null,
+      process_incarnation: null
+    })
+    expect(
+      d.verifyDispatchCapability({
+        dispatchId,
+        capability,
+        paneKey: PANE,
+        processIncarnation: INCARNATION
+      })
+    ).toMatchObject({ valid: false })
+  })
+
   it('refuses to bind a pane whose launch token does not match the commitment', () => {
     const { d, dispatchId } = startDispatch()
     d.commitDispatchLaunchTokenHash(dispatchId, TOKEN_HASH)
-    d.mintStartingWorkerCapability({ dispatchId })
+    const capability = d.mintStartingWorkerCapability({ dispatchId })
     const wrongHash = createHash('sha256').update('some-other-token').digest('hex')
     expect(() =>
       d.bindStartingWorkerAuthority(bindParams(dispatchId, { launchTokenHash: wrongHash }))
     ).toThrow(/launch-token commitment does not match/)
-    expect(d.getDispatchContextById(dispatchId)).toMatchObject({ assignee_pane_key: null })
+    expect(d.getDispatchContextById(dispatchId)).toMatchObject({
+      assignee_handle: null,
+      assignee_pane_key: null,
+      process_incarnation: null
+    })
+    expect(
+      d.verifyDispatchCapability({
+        dispatchId,
+        capability,
+        paneKey: PANE,
+        processIncarnation: INCARNATION
+      })
+    ).toMatchObject({ valid: false })
   })
 
   it('refuses to bind a pane that presents no launch token when one was committed', () => {
