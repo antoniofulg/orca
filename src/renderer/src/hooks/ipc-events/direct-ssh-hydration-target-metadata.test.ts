@@ -122,15 +122,16 @@ describe('direct SSH hydration target metadata', () => {
         return Promise.resolve([{ id: 'ssh-live', label: 'devbox' }])
       },
       listRemovedTargetLabels: () => new Promise(() => {}),
-      getState: () => Promise.resolve(null)
+      getState: () => Promise.resolve(connectingState('ssh-live'))
     })
 
     registerDirectSshStateIpcBridge(unsubs, bridgeRuntime())
     await settle()
 
-    expect(selectRuntimeAwareSshTargetLabel(useAppStore.getState(), null, 'ssh-live')).toBe(
-      'devbox'
-    )
+    expect({
+      label: selectRuntimeAwareSshTargetLabel(useAppStore.getState(), null, 'ssh-live'),
+      status: useAppStore.getState().sshConnectionStates.get('ssh-live')?.status
+    }).toEqual({ label: 'devbox', status: 'connecting' })
 
     // A push for a known target takes the fast path instead of re-querying the
     // link that is already failing to answer.
