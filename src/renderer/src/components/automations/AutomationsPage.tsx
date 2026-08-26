@@ -118,6 +118,7 @@ import type {
   AutomationAuthorityRef,
   StableAutomationCatalogRef
 } from '../../../../shared/automation-owner-ref'
+import type { AutomationDestination } from '../../../../shared/automation-owner-precondition'
 import { automationAuthorityCatalogKey } from './automation-host-catalog-types'
 import {
   capturedAutomationOwner,
@@ -139,7 +140,12 @@ import {
   automationRuntimePairingRevision,
   groupReposByAutomationAuthority
 } from './automation-authority-identity'
-import { automationCreateHostStableKey } from './automation-create-destination'
+import {
+  automationCreateHostStableKey,
+  resolveAutomationCreateDestination,
+  revalidateAutomationCreateDestination,
+  type AutomationCreateDestination
+} from './automation-create-destination'
 import { useAutomationCreateDestination } from './use-automation-create-destination'
 import { persistSkipDeleteAutomationConfirm } from './automation-delete-confirm-preference'
 import { buildAutomationEditDraft, buildExternalAutomationEditDraft } from './automation-edit-draft'
@@ -259,6 +265,12 @@ export default function AutomationsPage(): React.JSX.Element {
   // Held beside the id: a save fences on the row the user opened, and under All
   // hosts that id alone names two rows.
   const [editingRowKey, setEditingRowKey] = useState<string | null>(null)
+  // Captured with the editor's selected project so an SSH re-registration while
+  // the form is open cannot silently retarget the saved automation.
+  const [editingDestination, setEditingDestination] = useState<{
+    projectId: string
+    destination: AutomationCreateDestination
+  } | null>(null)
   const [relativeNow, setRelativeNow] = useState(Date.now())
   const [activePaneTab, setActivePaneTab] = useState<AutomationPaneTab>('overview')
   const [selectedAutomationRunPageId, setSelectedAutomationRunPageId] = useState<string | null>(
@@ -345,6 +357,8 @@ export default function AutomationsPage(): React.JSX.Element {
     missedRunGraceMinutes: '720',
     scheduleWarning: null
   })
+  const draftRef = useRef(draft)
+  draftRef.current = draft
 
   const hostCatalog = useAutomationHostCatalog({ failedAuthorityKeys })
   // Probing follows the selection, not the catalog: a Local selection must not
@@ -938,6 +952,26 @@ export default function AutomationsPage(): React.JSX.Element {
     }
   }, [activeWorktreeId, editorProjects, repoMap, worktreeMap, worktreesByRepo])
 
+  const destinationForProject = useCallback(
+    (projectId: string): AutomationCreateDestination | null => {
+      const runContext = buildAutomationRunContextForRepo({
+        repoId: projectId,
+        repos,
+        projectHostSetups
+      })
+      if (!runContext) {
+        return null
+      }
+      const stableKey = automationCreateHostStableKey(runContext.hostId)
+      const entry = stableKey
+        ? hostCatalog.entries.find((candidate) => candidate.stableKey === stableKey)
+        : undefined
+      const resolved = resolveAutomationCreateDestination(entry)
+      return resolved.status === 'ready' ? resolved : null
+    },
+    [hostCatalog.entries, projectHostSetups, repos]
+  )
+
   const reloadExternalManagers = scopedExternal.reload
 
   const refresh = useCallback(async () => {
@@ -1149,6 +1183,7 @@ export default function AutomationsPage(): React.JSX.Element {
     const target = getDefaultTarget()
     setEditingAutomationId(null)
     setEditingExternalTarget(null)
+    setEditingDestination(null)
     setCreateTarget('orca')
     const baseDraft: AutomationDraft = {
       name: '',
@@ -1213,6 +1248,10 @@ export default function AutomationsPage(): React.JSX.Element {
     }
     setEditingAutomationId(latest.id)
     setEditingRowKey(row.key)
+    const initialDestination = destinationForProject(latest.projectId)
+    setEditingDestination(
+      initialDestination ? { projectId: latest.projectId, destination: initialDestination } : null
+    )
     const nextDraft = buildAutomationEditDraft(latest)
     setDraft(nextDraft)
     setDraftAtOpen(nextDraft)
@@ -1243,6 +1282,7 @@ export default function AutomationsPage(): React.JSX.Element {
     })
     setEditingAutomationId(null)
     setEditingRowKey(null)
+    setEditingDestination(null)
     setEditingExternalTarget({ manager, job, scope })
     setCreateTarget('hermes')
     setDraft(nextDraft)
@@ -1254,6 +1294,10 @@ export default function AutomationsPage(): React.JSX.Element {
     (projectId: string): void => {
       const currentWorktrees = worktreesByRepo[projectId] ?? []
       const currentDefaultWorktree = getDefaultWorktree(currentWorktrees)
+      if (editingAutomationId !== null) {
+        const destination = destinationForProject(projectId)
+        setEditingDestination(destination ? { projectId, destination } : null)
+      }
       setDraft((current) => ({
         ...current,
         projectId,
@@ -1276,7 +1320,24 @@ export default function AutomationsPage(): React.JSX.Element {
         )
       })
     },
-    [fetchWorktrees, worktreesByRepo]
+    [destinationForProject, editingAutomationId, fetchWorktrees, worktreesByRepo]
+  )
+
+  const handleDraftChange = useCallback(
+    (updater: (current: AutomationDraft) => AutomationDraft): void => {
+      const current = draftRef.current
+      const next = updater(current)
+      draftRef.current = next
+      setDraft(next)
+      if (
+        editingAutomationId !== null &&
+        (next.projectId !== current.projectId || next.workspaceId !== current.workspaceId)
+      ) {
+        const destination = destinationForProject(next.projectId)
+        setEditingDestination(destination ? { projectId: next.projectId, destination } : null)
+      }
+    },
+    [destinationForProject, editingAutomationId]
   )
 
   const saveAutomation = async (): Promise<void> => {
@@ -1483,6 +1544,52 @@ export default function AutomationsPage(): React.JSX.Element {
         }
         currentAutomation = (reread.ok ? reread.value : null) ?? currentAutomation
       }
+      let editDestination: AutomationDestination | undefined
+      const destinationChanged =
+        currentAutomation &&
+        (currentAutomation.projectId !== draft.projectId ||
+          currentAutomation.workspaceId !== (draft.workspaceId || null) ||
+          currentAutomation.workspaceMode !== draft.workspaceMode)
+      if (editingAutomationId && currentAutomation && destinationChanged) {
+        if (!editingDestination || editingDestination.projectId !== draft.projectId) {
+          setEditorNotice({
+            message: translate(
+              'auto.components.automations.createDestination.unavailable',
+              'Choose an available project on this host before saving.'
+            ),
+            recovery: 'retry',
+            severity: 'owner'
+          })
+          return
+        }
+        const revalidated = revalidateAutomationCreateDestination(
+          editingDestination.destination,
+          hostCatalog.entries
+        )
+        if (revalidated.status === 'stale') {
+          setEditorNotice({
+            message: translate(
+              'auto.components.automations.createDestination.stale',
+              '{host} changed while this form was open. Choose the project again before saving.'
+            ).replace('{host}', revalidated.entry.label),
+            recovery: 'retry',
+            severity: 'owner'
+          })
+          return
+        }
+        if (revalidated.status !== 'ready') {
+          setEditorNotice({
+            message: translate(
+              'auto.components.automations.createDestination.unavailable',
+              'Choose an available project on this host before saving.'
+            ),
+            recovery: 'retry',
+            severity: 'owner'
+          })
+          return
+        }
+        editDestination = revalidated.destination
+      }
       const updates: AutomationUpdateInput = {
         name: draft.name,
         prompt: draft.prompt,
@@ -1519,7 +1626,8 @@ export default function AutomationsPage(): React.JSX.Element {
               }
               return updateAutomationForTarget(editSource, updates, automationHostTarget)
             },
-            'save'
+            'save',
+            editDestination
           )
         : await createDraftAutomation({
             name: draft.name,
@@ -2064,7 +2172,7 @@ export default function AutomationsPage(): React.JSX.Element {
             setEditorNotice(null)
           }
         }}
-        onDraftChange={setDraft}
+        onDraftChange={handleDraftChange}
         onSetupDecisionTouched={markSetupDecisionTouched}
         onApplyTemplate={applyTemplateToDraft}
         onSave={() => void saveAutomation()}
