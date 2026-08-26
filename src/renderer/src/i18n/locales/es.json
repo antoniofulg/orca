@@ -13841,6 +13841,7 @@
           "backToList": "Todas las automatizaciones",
           "tableName": "Nombre",
           "tableProject": "Proyecto",
+          "tableHost": "Host",
           "tableStatus": "Estado",
           "tableActions": "Acciones",
           "newAutomation": "Nueva automatización",

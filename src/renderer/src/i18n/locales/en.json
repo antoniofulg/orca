@@ -15391,6 +15391,7 @@
           "backToList": "All automations",
           "tableName": "Name",
           "tableProject": "Project",
+          "tableHost": "Host",
           "tableStatus": "Status",
           "tableActions": "Actions",
           "newAutomation": "New Automation",
@@ -15574,6 +15575,7 @@
           "hostNotConnectedDetail": "Connect to this host to see the automations stored for it.",
           "hostEmpty": "No automations on {{hostLabel}}",
           "searchNoMatch": "No automations match your search",
+          "filtersNoMatch": "No automations match your filters",
           "allHostsEmpty": "No automations across loaded hosts"
         },
         "hostNotice": {
@@ -15584,10 +15586,7 @@
         },
         "hostPicker": {
           "allHosts": "All hosts",
-          "loadingHost": "Loading host…",
-          "label": "Filter by host",
-          "searchPlaceholder": "Search hosts",
-          "noHostMatch": "No hosts match"
+          "loadingHost": "Loading host…"
         },
         "ownerConflict": {
           "dismiss": "Dismiss"
