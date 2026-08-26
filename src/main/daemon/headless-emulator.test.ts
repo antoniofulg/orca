@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HeadlessEmulator } from './headless-emulator'
 
 function expectedNativePath(posixPath: string): string {
@@ -51,6 +51,139 @@ describe('HeadlessEmulator', () => {
 
       const snapshot = emulator.getSnapshot()
       expect(snapshot.snapshotAnsi).toContain('red text')
+    })
+
+    it('proves shell ownership when command completion follows an unclosed alternate screen', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(async () => true)
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;137\x07shell-marker')
+
+      await vi.waitFor(() => {
+        expect(emulator.getSnapshot()).toMatchObject({
+          modes: { alternateScreen: true },
+          terminalOwner: 'shell'
+        })
+      })
+    })
+
+    it('settles an in-flight shell proof before publishing its snapshot boundary', async () => {
+      let resolveConfirmation: ((confirmed: boolean) => void) | undefined
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(
+        () => new Promise((resolve) => void (resolveConfirmation = resolve))
+      )
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;137\x07shell-marker')
+
+      let settled = false
+      const settlement = emulator.settleShellOwnershipConfirmation().then(() => {
+        settled = true
+      })
+      await Promise.resolve()
+      expect(settled).toBe(false)
+
+      resolveConfirmation?.(true)
+      await settlement
+      expect(emulator.getSnapshot().terminalOwner).toBe('shell')
+    })
+
+    it('does not infer shell ownership without execution-host proof', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;137\x07shell-marker')
+
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+    })
+
+    it('does not inspect processes for ordinary terminal output or live TUI frames', async () => {
+      const confirm = vi.fn(async () => true)
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(confirm)
+
+      await emulator.write('shell output\r\n\x1b[?1049h\x1b[?1003hLIVE-TUI')
+
+      expect(confirm).not.toHaveBeenCalled()
+    })
+
+    it('does not apply an earlier command completion to a later TUI in the same chunk', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(async () => true)
+      await emulator.write('\x1b]133;D;0\x07\x1b[?1049hLIVE-TUI')
+
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+    })
+
+    it('proves shell ownership after normal TUI cleanup', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(async () => true)
+      await emulator.write('\x1b[?1049hTUI\x1b[?1049l\x1b]133;D;0\x07shell-marker')
+
+      await vi.waitFor(() => {
+        expect(emulator.getSnapshot()).toMatchObject({
+          modes: { alternateScreen: false },
+          terminalOwner: 'shell'
+        })
+      })
+
+      await emulator.write('\x1b[?1003hLIVE-TUI')
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+    })
+
+    it('revokes shell ownership when another command or TUI starts', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(async () => true)
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;137\x07')
+      await vi.waitFor(() => expect(emulator.getSnapshot().terminalOwner).toBe('shell'))
+
+      await emulator.write('\x1b]133;C\x07')
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+
+      await emulator.write('\x1b]133;D;0\x07')
+      await vi.waitFor(() => expect(emulator.getSnapshot().terminalOwner).toBe('shell'))
+
+      await emulator.write('\x1b[?1049hLIVE-TUI')
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+    })
+
+    it('tracks split mode and command lifecycle sequences without a timer', async () => {
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(async () => true)
+      await emulator.write('\x1b[?10')
+      await emulator.write('49hTUI\x1b]133;D;1')
+      await emulator.write('37\x07shell-marker')
+
+      await vi.waitFor(() => expect(emulator.getSnapshot().terminalOwner).toBe('shell'))
+    })
+
+    it('rejects a confirmation superseded by a later command start', async () => {
+      let resolveConfirmation: ((confirmed: boolean) => void) | undefined
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(
+        () => new Promise((resolve) => void (resolveConfirmation = resolve))
+      )
+
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;137\x07')
+      await emulator.write('\x1b]133;C\x07LIVE-TUI')
+      resolveConfirmation?.(true)
+      await Promise.resolve()
+
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
+    })
+
+    it('does not inspect a queued completion after a later command revokes it', async () => {
+      let resolveConfirmation: ((confirmed: boolean) => void) | undefined
+      const confirm = vi.fn(
+        () => new Promise<boolean>((resolve) => void (resolveConfirmation = resolve))
+      )
+      emulator = new HeadlessEmulator({ cols: 80, rows: 24 })
+      emulator.setShellOwnershipConfirmation(confirm)
+
+      await emulator.write('\x1b[?1049hTUI\x1b]133;D;1\x07')
+      await emulator.write('\x1b]133;D;2\x07')
+      await emulator.write('\x1b]133;C\x07LIVE-TUI')
+      resolveConfirmation?.(false)
+      await emulator.settleShellOwnershipConfirmation()
+
+      expect(confirm).toHaveBeenCalledTimes(1)
+      expect(emulator.getSnapshot().terminalOwner).toBeUndefined()
     })
 
     it('captures OSC 8 link ranges in snapshot metadata', async () => {
