@@ -191,7 +191,7 @@ function monitorArgvStartupBlocked(args: {
       timeoutMs: args.timeoutMs
     })
     .then((wait) => {
-      if (!wait.blockedReason) {
+      if (wait.satisfied) {
         return
       }
       publishWorkerStartupBlocked({
@@ -200,7 +200,7 @@ function monitorArgvStartupBlocked(args: {
         runId: args.runId,
         dispatchId: args.dispatchId,
         terminalHandle: args.terminalHandle,
-        blockedReason: wait.blockedReason
+        blockedReason: wait.blockedReason ?? 'Terminal readiness wait was not satisfied.'
       })
     })
     .catch(() => undefined)

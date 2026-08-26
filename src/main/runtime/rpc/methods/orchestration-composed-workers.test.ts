@@ -685,6 +685,51 @@ describe('orchestration RPC methods', () => {
       }
     )
 
+    it('reports an argv readiness timeout with a fallback without revoking capability', async () => {
+      setup()
+      mockCurrentWorkerStart()
+      vi.mocked(runtime.waitForTerminal).mockResolvedValueOnce({
+        handle: 'term_worker',
+        condition: 'tui-idle',
+        satisfied: false,
+        status: 'running',
+        exitCode: null
+      })
+      const insertMessage = vi.spyOn(db, 'insertMessage')
+      const notify = vi.spyOn(runtime, 'notifyMessageArrived').mockImplementation(() => {})
+      const task = db.createTask({ spec: 'argv readiness timeout' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as { state: string; dispatchId: string }
+
+      expect(result.state).toBe('ready')
+      expect(db.getTask(task.id)?.status).toBe('dispatched')
+      expect(db.getDispatchContextById(result.dispatchId)).toMatchObject({
+        status: 'dispatched',
+        capability_revoked_at: null,
+        capability_hash: expect.any(String)
+      })
+      expect(insertMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          priority: 'high',
+          subject: expect.stringContaining(
+            'startup blocked: Terminal readiness wait was not satisfied.'
+          )
+        })
+      )
+      const blockedMessage = insertMessage.mock.calls.at(-1)?.[0]
+      expect(JSON.parse(blockedMessage?.payload ?? '{}')).toMatchObject({
+        dispatchId: result.dispatchId,
+        blockedReason: 'Terminal readiness wait was not satisfied.',
+        terminalHandle: 'term_worker'
+      })
+      expect(notify).toHaveBeenCalled()
+      expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    })
+
     it('creates a child worktree agent-first with setup run by default', async () => {
       setup()
       mockCurrentWorkerStart()
