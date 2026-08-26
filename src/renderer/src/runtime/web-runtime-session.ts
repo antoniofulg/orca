@@ -67,6 +67,7 @@ import {
 import { runRemoteAgentSessionLaunch } from './remote-agent-session-launch'
 import { translate } from '../i18n/i18n'
 import { getRuntimeEnvironmentRevision } from './runtime-environment-revision'
+import { getRuntimeEnvironmentConnectionGeneration } from '@/store/slices/runtime-status'
 import { parsePaneKey } from '../../../shared/stable-pane-id'
 import { toRuntimeExecutionHostId } from '../../../shared/execution-host'
 import {
@@ -802,8 +803,13 @@ export async function refreshWebRuntimeSessionTabsSnapshot(
     errorMode?: 'warn' | 'throw'
   } = {}
 ): Promise<void> {
+  const webSessionTabsSync = await import('./web-session-tabs-sync')
   const expectedEnvironmentPairingRevision =
     options.expectedEnvironmentPairingRevision ?? getRuntimeEnvironmentRevision(environmentId)
+  const expectedEnvironmentConnectionGeneration =
+    getRuntimeEnvironmentConnectionGeneration(environmentId)
+  const expectedTrackingGeneration =
+    webSessionTabsSync.getWebSessionTabsTrackingGeneration(environmentId)
   const callEnvironment = captureRuntimeEnvironmentCall(
     environmentId,
     expectedEnvironmentPairingRevision
@@ -852,7 +858,7 @@ export async function refreshWebRuntimeSessionTabsSnapshot(
       applyWebSessionTabsSnapshot,
       applyWebSessionTabsStorePatch,
       decideWebSessionTabsSnapshot
-    } = await import('./web-session-tabs-sync')
+    } = webSessionTabsSync
     if (getRuntimeEnvironmentRevision(environmentId) !== expectedEnvironmentPairingRevision) {
       return
     }
@@ -868,7 +874,18 @@ export async function refreshWebRuntimeSessionTabsSnapshot(
           : state
         return patch === state ? state : patch
       },
-      { frames: [{ environmentId, worktreeId: snapshot.worktree, decision }] },
+      {
+        frames: [
+          {
+            environmentId,
+            worktreeId: snapshot.worktree,
+            decision,
+            expectedEnvironmentConnectionGeneration,
+            expectedEnvironmentPairingRevision,
+            expectedTrackingGeneration
+          }
+        ]
+      },
       snapshot
     )
     settleMirror()

@@ -646,6 +646,7 @@ describe('session tab RPC methods', () => {
           tabs: []
         }
       ]),
+      supportsAuthoritativeSessionTabsInventory: vi.fn(() => false),
       onMobileSessionTabsChanged: vi.fn((listener: (snapshot: unknown) => void) => {
         listeners.push(listener)
         return unsubscribe
@@ -692,6 +693,7 @@ describe('session tab RPC methods', () => {
     const runtime = {
       getRuntimeId: () => 'test-runtime',
       listAllMobileSessionTabs: vi.fn(() => []),
+      supportsAuthoritativeSessionTabsInventory: vi.fn(() => false),
       onMobileSessionTabsChanged: vi.fn(() => vi.fn()),
       registerSubscriptionCleanup: vi.fn()
     } as unknown as OrcaRuntimeService

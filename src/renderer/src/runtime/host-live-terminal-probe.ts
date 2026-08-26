@@ -19,6 +19,7 @@ type RuntimeCall = (args: {
   method: string
   params: unknown
   timeoutMs: number
+  expectedEnvironmentPairingRevision?: number
 }) => Promise<RuntimeRpcResponse<unknown>>
 
 type ValidTerminalListResult = RuntimeTerminalListResult & {
@@ -39,7 +40,6 @@ function isTerminalListResult(value: unknown): value is ValidTerminalListResult 
   }
   const hostScope = (value as { hostScope?: unknown }).hostScope
   if (hostScope === undefined) {
-    // Older hosts do not publish scope; preserve their best-effort list result.
     return true
   }
   return (
@@ -52,7 +52,8 @@ function isTerminalListResult(value: unknown): value is ValidTerminalListResult 
 
 async function probeHost(
   environmentId: string,
-  call: RuntimeCall
+  call: RuntimeCall,
+  expectedEnvironmentPairingRevision?: number
 ): Promise<HostLiveTerminalProbeVerdict> {
   const response = await call({
     selector: environmentId,
@@ -66,7 +67,8 @@ async function probeHost(
       requireFreshPtyLiveness: true,
       includeVisualLayouts: false
     },
-    timeoutMs: 15_000
+    timeoutMs: 15_000,
+    expectedEnvironmentPairingRevision
   })
   if (response.ok === false || !isTerminalListResult(response.result)) {
     return 'unverifiable'
@@ -74,10 +76,13 @@ async function probeHost(
   // An omitted execution host is an incomplete census. In particular, a relay
   // can list its local PTYs while an SSH child host is still starting up.
   const hostScope = response.result.hostScope
+  const { terminals, totalCount } = response.result
+  if (!hostScope) {
+    return terminals.length > 0 || totalCount > 0 ? 'live' : 'unverifiable'
+  }
   if (hostScope && hostScope.omittedHostIds.length > 0) {
     return 'unverifiable'
   }
-  const { terminals, totalCount } = response.result
   return terminals.length > 0 || (typeof totalCount === 'number' && totalCount > 0)
     ? 'live'
     : 'none'
@@ -86,14 +91,15 @@ async function probeHost(
 export function probeHostLiveTerminals(
   environmentId: string,
   call: RuntimeCall = (args) => window.api.runtimeEnvironments.call(args),
-  connectionGeneration = 0
+  connectionGeneration = 0,
+  expectedEnvironmentPairingRevision?: number
 ): Promise<HostLiveTerminalProbeVerdict> {
-  const key = `${environmentId}\0${connectionGeneration}`
+  const key = `${environmentId}\0${connectionGeneration}\0${expectedEnvironmentPairingRevision ?? 'unknown'}`
   const existing = inFlightProbeByEnvironment.get(key)
   if (existing) {
     return existing
   }
-  const probe = probeHost(environmentId, call)
+  const probe = probeHost(environmentId, call, expectedEnvironmentPairingRevision)
     .catch((): HostLiveTerminalProbeVerdict => 'unverifiable')
     .finally(() => {
       if (inFlightProbeByEnvironment.get(key) === probe) {

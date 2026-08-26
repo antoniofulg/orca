@@ -13,6 +13,7 @@ import {
 } from './session-tabs-schemas'
 import { SESSION_TAB_CLOSE_METHODS } from './session-tab-close-methods'
 import { projectSessionTabAgentStatus } from './session-tab-agent-status-projection'
+import { listSessionTabsInventory, subscribeSessionTabsInventory } from './session-tabs-inventory'
 
 export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
   defineMethod({
@@ -28,11 +29,7 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
   defineMethod({
     name: 'session.tabs.listAll',
     params: null,
-    handler: async (_params, { runtime, pairedDeviceId, clientKind, clientCapabilities }) => ({
-      snapshots: (await runtime.listAllMobileSessionTabs(pairedDeviceId)).map((snapshot) =>
-        projectSessionTabAgentStatus(snapshot, clientKind, clientCapabilities)
-      )
-    })
+    handler: async (_params, context) => listSessionTabsInventory(context)
   }),
   defineMethod({
     name: 'session.tabs.activate',
@@ -210,62 +207,7 @@ export const SESSION_TAB_METHODS: RpcAnyMethod[] = [
   defineStreamingMethod({
     name: 'session.tabs.subscribeAll',
     params: null,
-    handler: async (
-      _params,
-      { runtime, connectionId, requestId, pairedDeviceId, clientKind, clientCapabilities },
-      emit
-    ) => {
-      let unsubscribe = (): void => {}
-      let closed = false
-      // Why: initial listAll errors should return one RPC error, not a leaked
-      // subscription cleanup that later emits a stray end frame.
-      let initialized = false
-      const cleanupPrefix = `session.tabs:${connectionId ?? 'local'}:*`
-      const subscriptionId = requestId ? `${cleanupPrefix}:${requestId}` : cleanupPrefix
-      // Why: shared-control can carry multiple all-tab subscribers on one
-      // socket; include the RPC id so closing one does not evict siblings.
-      runtime.registerSubscriptionCleanup(
-        subscriptionId,
-        () => {
-          closed = true
-          unsubscribe()
-          if (initialized) {
-            emit({ type: 'end' })
-          }
-        },
-        connectionId
-      )
-
-      if (closed) {
-        return
-      }
-      const snapshots = await Promise.resolve(
-        runtime.listAllMobileSessionTabs(pairedDeviceId)
-      ).catch((error) => {
-        runtime.cleanupSubscription(subscriptionId)
-        throw error
-      })
-      if (closed) {
-        return
-      }
-      emit({
-        type: 'snapshots',
-        snapshots: snapshots.map((snapshot) =>
-          projectSessionTabAgentStatus(snapshot, clientKind, clientCapabilities)
-        )
-      })
-      initialized = true
-
-      if (closed) {
-        return
-      }
-      unsubscribe = runtime.onMobileSessionTabsChanged((snapshot) => {
-        emit({
-          type: 'updated',
-          ...projectSessionTabAgentStatus(snapshot, clientKind, clientCapabilities)
-        })
-      }, pairedDeviceId)
-    }
+    handler: async (_params, context, emit) => subscribeSessionTabsInventory(context, emit)
   }),
   defineMethod({
     name: 'session.tabs.unsubscribeAll',
