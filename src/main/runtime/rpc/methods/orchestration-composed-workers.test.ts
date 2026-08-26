@@ -54,6 +54,7 @@ describe('orchestration RPC methods', () => {
       let workerHandle = 'term_worker'
       let actualWorkerHandle = 'term_worker'
       let workerLaunchTokenHash: string | null = null
+      vi.spyOn(runtime, 'createPreAllocatedTerminalHandle').mockReturnValue('term_worker')
       vi.mocked(runtime.getTerminalPaneKey).mockImplementation((handle) =>
         handle === 'term_coord'
           ? coordinatorPaneKey
@@ -695,7 +696,7 @@ describe('orchestration RPC methods', () => {
         id: 'repo',
         kind: 'git'
       } as never)
-      const create = vi.spyOn(runtime, 'createManagedWorktree').mockResolvedValue({
+      const createdWorktree = {
         worktree: { id: 'repo::child', repoId: 'repo' },
         startupTerminal: { spawned: true, handle: 'term_worker' },
         setupReceipt: {
@@ -705,7 +706,27 @@ describe('orchestration RPC methods', () => {
           state: 'running',
           terminalHandle: 'term_setup'
         }
-      } as never)
+      } as never
+      const create = vi.spyOn(runtime, 'createManagedWorktree').mockImplementation(async (args) => {
+        const launchTokenHash = args.startupLaunchToken
+          ? createHash('sha256').update(args.startupLaunchToken).digest('hex')
+          : null
+        vi.mocked(runtime.getOrchestrationDispatchAuthority).mockReturnValue(
+          launchTokenHash
+            ? ({
+                runtimeId: runtime.getRuntimeId(),
+                terminalHandle: 'term_worker',
+                ptyId: 'pty_worker',
+                worktreeId: 'repo::child',
+                paneKey: 'tab_worker:leaf_worker',
+                processIncarnation: 'runtime_test:term_worker:1',
+                launchTokenHash,
+                hostScope: null
+              } as never)
+            : null
+        )
+        return createdWorktree
+      })
       vi.spyOn(runtime, 'listTerminals').mockResolvedValue({
         terminals: [
           { handle: 'term_worker', title: 'Codex' },
@@ -750,7 +771,7 @@ describe('orchestration RPC methods', () => {
       )
       expect(result.effects).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ role: 'agent', action: 'reused_agent_terminal' }),
+          expect.objectContaining({ role: 'agent', action: 'created' }),
           expect.objectContaining({ role: 'setup', action: 'created' }),
           expect.objectContaining({ role: 'configured_tab', action: 'created' })
         ])

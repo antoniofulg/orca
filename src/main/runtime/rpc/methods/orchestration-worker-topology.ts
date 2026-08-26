@@ -1,4 +1,5 @@
 import type { AgentLaunchPreferences } from '../../../../shared/agent-session-host-authority'
+import type { ArgvWorktreeLaunch } from './orchestration-worker-authority'
 import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import type { OrchestrationDb } from '../../orchestration/db'
@@ -121,6 +122,7 @@ export async function createWorkerWorktree(args: {
   }
   agent: TuiAgent
   launchPreferences?: AgentLaunchPreferences
+  argvWorktreeLaunch?: ArgvWorktreeLaunch
   effects: WorkerEffect[]
 }): Promise<{
   worktree: Awaited<ReturnType<OrcaRuntimeService['showManagedWorktree']>>
@@ -145,6 +147,13 @@ export async function createWorkerWorktree(args: {
     createdWithAgent: args.agent,
     startupAgent: args.agent,
     ...(args.launchPreferences ? { startupLaunchPreferences: args.launchPreferences } : {}),
+    ...(args.argvWorktreeLaunch
+      ? {
+          startupPrompt: args.argvWorktreeLaunch.startupPrompt,
+          startupLaunchToken: args.argvWorktreeLaunch.startupLaunchToken,
+          startupPreAllocatedHandle: args.argvWorktreeLaunch.startupPreAllocatedHandle
+        }
+      : {}),
     activate: false,
     lineage: {
       parentWorktree: requestedWorktree === 'new-child' ? coordinatorWorktree.id : undefined,
@@ -153,6 +162,24 @@ export async function createWorkerWorktree(args: {
     }
   })
   const terminalHandle = created.startupTerminal?.handle
+  const setupReceipt = {
+    requested: setupDecision,
+    effective: setupDecision,
+    source: params.setup ? 'explicit_request' : 'orchestration_default',
+    hookFound: created.setupReceipt?.hookFound ?? false,
+    startupPolicy: created.setupReceipt?.startupPolicy ?? 'start-immediately',
+    state: created.setupReceipt?.state ?? 'not_configured'
+  }
+  if (!terminalHandle) {
+    throw new Error(created.warning ?? 'Agent-first worktree creation returned no terminal.')
+  }
+  if (args.argvWorktreeLaunch && created.startupTerminal) {
+    args.argvWorktreeLaunch.persistAgentTerminalOwnership(
+      { ...created.startupTerminal, handle: terminalHandle },
+      setupReceipt,
+      created.worktree.id
+    )
+  }
   effects.push({
     kind: 'worktree',
     action: requestedWorktree === 'new-child' ? 'created_child' : 'created_top_level',
@@ -165,22 +192,14 @@ export async function createWorkerWorktree(args: {
     effects,
     residualResources: effects
   })
-  const setupReceipt = {
-    requested: setupDecision,
-    effective: setupDecision,
-    source: params.setup ? 'explicit_request' : 'orchestration_default',
-    hookFound: created.setupReceipt?.hookFound ?? false,
-    startupPolicy: created.setupReceipt?.startupPolicy ?? 'start-immediately',
-    state: created.setupReceipt?.state ?? 'not_configured'
-  }
-  if (!terminalHandle) {
-    throw new Error(created.warning ?? 'Agent-first worktree creation returned no terminal.')
-  }
   const listed = await runtime.listTerminals(`id:${created.worktree.id}`, undefined, {
     includeVisualLayouts: false
   })
   const setupTerminalHandle = created.setupReceipt?.terminalHandle
   for (const terminal of listed.terminals) {
+    if (terminal.handle === terminalHandle && args.argvWorktreeLaunch) {
+      continue
+    }
     effects.push({
       kind: 'terminal',
       role:

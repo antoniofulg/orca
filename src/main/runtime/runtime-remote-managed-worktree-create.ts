@@ -116,6 +116,10 @@ export async function createRuntimeRemoteManagedWorktree(
         env: sequencedStartup.env,
         ...(sequencedStartup.launchConfig ? { launchConfig: sequencedStartup.launchConfig } : {}),
         ...(args.createdWithAgent ? { launchAgent: args.createdWithAgent } : {}),
+        ...(args.startupLaunchToken ? { launchToken: args.startupLaunchToken } : {}),
+        ...(args.startupPreAllocatedHandle
+          ? { preAllocatedHandle: args.startupPreAllocatedHandle }
+          : {}),
         ...(sequencedStartup.viewMode ? { viewMode: sequencedStartup.viewMode } : {}),
         startupCommandDelivery: sequencedStartup.startupCommandDelivery,
         telemetry: sequencedStartup.telemetry,

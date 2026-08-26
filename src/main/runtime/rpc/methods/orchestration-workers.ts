@@ -1,17 +1,16 @@
 import { TUI_AGENT_CONFIG } from '../../../../shared/tui-agent-config'
 import type { TuiAgent } from '../../../../shared/tui-agent'
-import { buildDispatchPreamble } from '../../orchestration/preamble'
 import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { defineMethod, type RpcMethod } from '../core'
 import { startFederatedWorker } from './orchestration-federated-worker-start'
 import { assertOrchestrationWorktreeCreationSupported } from './orchestration-folder-worktree-placement'
+import { attachWorkerAuthority, resolveArgvWorktreeLaunch } from './orchestration-worker-authority'
 import { startArgvWorkerDispatch } from './orchestration-worker-argv-start'
 import { WorkerStartParams } from './orchestration-worker-start-schema'
 import {
   createExistingWorktreeWorkerTerminal,
   createWorkerWorktree,
   monitorWorkerSetup,
-  requireWorkerAuthority,
   type WorkerEffect,
   type WorkerSetupReceipt
 } from './orchestration-worker-topology'
@@ -142,6 +141,17 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         mutationReceipt: orchestrationMutation
       })
       const effects: WorkerEffect[] = []
+      const argvWorktreeLaunch = resolveArgvWorktreeLaunch({
+        creationWorktree: Boolean(creationWorktree),
+        agent,
+        runtime,
+        db,
+        task,
+        dispatchId: started.dispatch.id,
+        coordinatorHandle: params.from,
+        devMode: params.devMode,
+        effects
+      })
       if (resolvedWorktree) {
         effects.push(
           { kind: 'worktree', action: 'reused', id: resolvedWorktree.id },
@@ -171,11 +181,14 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
             params,
             agent: agent as TuiAgent,
             launchPreferences: launch.preferences,
+            argvWorktreeLaunch,
             effects
           })
           resolvedWorktree = created.worktree
           terminalHandle = created.terminalHandle
           setupReceipt = created.setupReceipt
+          failedStage = argvWorktreeLaunch ? 'authority_bind' : failedStage
+          argvWorktreeLaunch?.assertTerminalHandle(terminalHandle)
         } else if (!terminalHandle) {
           db.recordWorkerStage({
             dispatchId: started.dispatch.id,
@@ -183,10 +196,6 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
             worktreeId: resolvedWorktree!.id,
             effects
           })
-          // Why: agents that embed the prompt in their launch argv start the
-          // first turn WITH the process — no paste, no Enter, no submission
-          // verification, no agent_prompt_stalled revocation of a healthy
-          // worker. The whole path lives in orchestration-worker-argv-start.
           if (agent && TUI_AGENT_CONFIG[agent].promptInjectionMode === 'argv') {
             return await startArgvWorkerDispatch({
               runtime,
@@ -259,30 +268,21 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
               : `Agent did not become ready (${wait.status}).`
           )
         }
-        const terminalAuthority = requireWorkerAuthority(runtime, terminalHandle)
-        const capability = db.prepareStartingWorkerAuthority({
+        failedStage = argvWorktreeLaunch ? failedStage : 'dispatch_input'
+        await attachWorkerAuthority({
+          runtime,
+          db,
           dispatchId: started.dispatch.id,
-          handle: terminalHandle,
-          ...terminalAuthority,
+          terminalHandle,
           worktreeId: resolvedWorktree.id,
           effects,
           setupState: setupReceipt.state,
-          terminalOwnership: params.terminal ? 'external' : 'created'
-        })
-
-        failedStage = 'dispatch_input'
-        const preamble = buildDispatchPreamble({
-          canDispatchSubWorkers: started.dispatch.depth < runtime.getNestedWorkerMaxDepth(),
-          taskId: task.id,
-          dispatchId: started.dispatch.id,
-          taskSpec: task.spec,
+          terminalOwnership: params.terminal ? 'external' : 'created',
+          task,
           coordinatorHandle: params.from,
-          workerHandle: terminalHandle,
-          dispatchCapability: capability,
           devMode: params.devMode,
-          cliCommand: runtime.getTerminalOrchestrationCliCommand(terminalHandle)
+          argv: Boolean(argvWorktreeLaunch)
         })
-        await runtime.sendTerminalAgentPrompt(terminalHandle, preamble)
         effects.push({
           kind: 'dispatch_input',
           role: 'agent',

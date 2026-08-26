@@ -16,15 +16,10 @@ import {
   persistWorkerReadinessStage
 } from './orchestration-worker-setup-gate'
 import type { OrchestrationWorkerLaunchReceipt } from './orchestration-worker-launch-preferences'
+import { persistArgvWorkerTerminalOwnership } from './orchestration-worker-authority'
 
-// Why: agents whose promptInjectionMode is 'argv' start the first turn WITH
-// the process — the dispatch preamble travels in the launch command, so
-// there is no paste, no Enter, no submission verification window, and no
-// agent_prompt_stalled revocation of a healthy worker. The capability and
-// preamble exist before the terminal; the pane proves it is the exact
-// spawned process by echoing the launch token it received in its
-// environment. Nothing timing-based ever sits between spawn, bind and
-// ready: a fast completion is settled, never refused.
+// Why: argv agents receive the preamble and launch token in the spawn command;
+// binding proves the returned pane is the exact process with no paste race.
 export async function startArgvWorkerDispatch(args: {
   runtime: OrcaRuntimeService
   db: OrchestrationDb
@@ -40,9 +35,7 @@ export async function startArgvWorkerDispatch(args: {
   worktreeId: string
   effects: WorkerEffect[]
   setupReceipt: WorkerSetupReceipt
-  // Why: the caller's catch settles the dispatch with the stage that was
-  // active when the failure happened; this callback keeps that ledger
-  // accurate without threading a mutable variable through the module.
+  // Caller catch records the active failure stage.
   onStage: (stage: string) => void
 }): Promise<Record<string, unknown>> {
   const { runtime, db, effects } = args
@@ -71,19 +64,18 @@ export async function startArgvWorkerDispatch(args: {
     launchToken: workerLaunchToken,
     agentPrompt: preamble,
     title: `worker-${args.task.id}`,
-    // Why: dispatching a worker is background work; it must not pull the
-    // sidebar to the worker's workspace while the user reads somewhere else.
+    // Background worker: do not pull the sidebar to its workspace.
     surfaceOwner: false
   })
-  effects.push({
-    kind: 'terminal',
-    role: 'agent',
-    action: 'created',
-    id: terminal.handle,
-    surface: terminal.surface,
-    warning: terminal.warning
+  persistArgvWorkerTerminalOwnership({
+    runtime,
+    db,
+    dispatchId: args.dispatchId,
+    worktreeId: args.worktreeId,
+    terminal,
+    setupReceipt: args.setupReceipt,
+    effects
   })
-  const terminalAuthority = runtime.getOrchestrationDispatchAuthority(terminal.handle)
   const setupStage = {
     db,
     dispatchId: args.dispatchId,
@@ -92,31 +84,8 @@ export async function startArgvWorkerDispatch(args: {
     setup: args.setupReceipt,
     effects
   }
-  // Why: createTerminal is the ownership boundary. Persist the exact returned
-  // handle and its releasable resource before any identity, setup, or authority
-  // check can reject the start and hide a live agent from its failure receipt.
-  persistWorkerReadinessStage(setupStage)
-  if (!db.getWorkerTerminalResourceByOwner(args.dispatchId)) {
-    db.createWorkerTerminalResourceStatement({
-      dispatchId: args.dispatchId,
-      worktreeId: args.worktreeId,
-      terminalHandle: terminal.handle,
-      paneKey:
-        terminal.paneKey ??
-        terminalAuthority?.paneKey ??
-        runtime.getTerminalPaneKey(terminal.handle),
-      processIncarnation:
-        terminalAuthority?.processIncarnation ??
-        runtime.getTerminalProcessIncarnation(terminal.handle),
-      hostScope: terminalAuthority?.hostScope ? JSON.stringify(terminalAuthority.hostScope) : null,
-      ownership: 'owned'
-    })
-  }
   args.onStage('authority_bind')
-  // Why: adoption paths can substitute a canonical surface handle
-  // (agentSessionEnsure/stablePaneOwner). The preamble already names
-  // preAllocatedHandle as the worker's identity; a substituted handle would
-  // make the worker self-identify wrongly forever.
+  // The preamble names preAllocatedHandle; a substituted handle is unsafe.
   if (terminal.handle !== preAllocatedHandle) {
     throw new Error(
       `Worker terminal adopted handle ${terminal.handle} instead of the pre-allocated ${preAllocatedHandle}.`
@@ -137,10 +106,7 @@ export async function startArgvWorkerDispatch(args: {
     setupState: args.setupReceipt.state,
     terminalOwnership: 'created'
   })
-  // Why: nothing may sit between bind and ready — the dispatch context stays
-  // 'pending' until markWorkerDispatchReady, and worker_done settlement
-  // refuses a pending dispatch, so any gate here would reject a fast
-  // completion. Blocked-screen detection is detached below.
+  // Bind before ready so fast completion cannot race a pending dispatch.
   effects.push({
     kind: 'dispatch_input',
     role: 'agent',
@@ -202,14 +168,6 @@ async function requireWorkerAuthorityAfterSpawn(
   }
 }
 
-// Why: an argv worker's brief is delivered at spawn, so a trust menu or
-// update prompt that renders instead of the first turn must NOT fail the
-// start — the dispatch identity is sound, and once the screen is cleared
-// the agent runs the brief with a still-valid capability. Failing here
-// would revoke that capability and orphan the recovered work; a timing
-// gate before ready would refuse a fast completion. The scan is therefore
-// detached evidence: ready returns immediately, and a detected blocked
-// screen becomes a high-priority message to the Run.
 function monitorArgvStartupBlocked(args: {
   runtime: OrcaRuntimeService
   db: OrchestrationDb
