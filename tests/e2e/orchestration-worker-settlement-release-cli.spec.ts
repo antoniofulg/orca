@@ -30,7 +30,16 @@ if (process.argv.slice(2).includes('app-server')) {
 let capability = null
 let acknowledged = false
 ${FAKE_AGENT_PASTE_END_SCANNER_SOURCE}
+const argvPreamble = process.argv.slice(2).find((argument) =>
+  argument.includes('You are working inside Orca, a multi-agent IDE. You are a dispatched worker.')
+)
 process.stdout.write('\\u001b]0;Codex Ready\\u0007OpenAI Codex\\nmodel: e2e\\ndirectory: e2e\\n')
+if (argvPreamble) {
+  capability = argvPreamble.match(/--dispatch-capability (dcap_[A-Za-z0-9_-]+)/)?.[1] || null
+  acknowledged = true
+  process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n')
+  setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
+}
 process.stdin.on('data', (chunk) => {
   const input = chunk.toString()
   const pasteEndScan = scanFakeAgentPasteEnd(fakeAgentPasteEndTail, input)
