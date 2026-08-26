@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ORCHESTRATION_CONTRACT_VERSION } from '../../../../shared/protocol-version'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import { OrchestrationDb } from '../../orchestration/db'
+import { reconcileLifecycleMessage } from '../../orchestration/lifecycle-reconciliation'
 import { RpcDispatcher } from '../dispatcher'
 import type { RpcRequest } from '../core'
 import { ORCHESTRATION_METHODS } from './orchestration'
@@ -231,6 +232,52 @@ describe('orchestration new-worktree workers', () => {
       )
     ).toHaveLength(1)
     expect(ownedResourceCount((result as { dispatchId: string }).dispatchId)).toBe(1)
+  })
+
+  it('accepts worker_done sent while argv startup is waiting for terminal readiness', async () => {
+    mockCreatedWorktree()
+    vi.mocked(runtime.waitForTerminal).mockImplementationOnce(async () => {
+      const task = db.listTasks()[0]!
+      const dispatch = db.getDispatchContext(task.id)!
+      const message = db.insertMessage({
+        from: 'term_worker',
+        to: `run:${runId}`,
+        subject: 'Completed immediately',
+        type: 'worker_done',
+        payload: JSON.stringify({
+          taskId: task.id,
+          dispatchId: dispatch.id,
+          outcome: 'succeeded'
+        }),
+        senderPaneKey: 'tab_worker:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        runId
+      })
+
+      expect(reconcileLifecycleMessage(db, message)).toEqual({
+        action: 'completed',
+        taskId: task.id,
+        dispatchId: dispatch.id
+      })
+      return {
+        handle: 'term_worker',
+        condition: 'tui-idle',
+        satisfied: true,
+        status: 'running',
+        exitCode: null
+      }
+    })
+
+    const { result, task } = await startWorker({ worktree: 'new-child' })
+
+    expect(result).toMatchObject({
+      state: 'succeeded',
+      stage: 'settled',
+      taskId: task.id,
+      effects: expect.arrayContaining([
+        expect.objectContaining({ kind: 'dispatch_input', state: 'accepted' })
+      ])
+    })
+    expect(db.getTask(task.id)).toMatchObject({ status: 'completed' })
   })
 
   it('keeps prompt submission for a non-argv new-worktree agent', async () => {

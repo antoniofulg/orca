@@ -4,21 +4,16 @@ import { OrchestrationError } from '../../orchestration/orchestration-error'
 import { defineMethod, type RpcMethod } from '../core'
 import { startFederatedWorker } from './orchestration-federated-worker-start'
 import { assertOrchestrationWorktreeCreationSupported } from './orchestration-folder-worktree-placement'
-import { attachWorkerAuthority, resolveArgvWorktreeLaunch } from './orchestration-worker-authority'
+import { resolveArgvWorktreeLaunch } from './orchestration-worker-authority'
 import { startArgvWorkerDispatch } from './orchestration-worker-argv-start'
+import { attachWorkerAndAwaitReadiness } from './orchestration-worker-readiness'
 import { WorkerStartParams } from './orchestration-worker-start-schema'
 import {
   createExistingWorktreeWorkerTerminal,
   createWorkerWorktree,
-  monitorWorkerSetup,
   type WorkerEffect,
   type WorkerSetupReceipt
 } from './orchestration-worker-topology'
-import {
-  persistGatedSetupSpawnFailure,
-  persistWorkerReadinessStage,
-  persistWorkerSetupWaitOutcome
-} from './orchestration-worker-setup-gate'
 import { failWorkerStartWithReceipt } from './orchestration-worker-start-receipt'
 import { prepareLocalWorkerStart } from './orchestration-worker-start-validation'
 import { resolveDispatchCreator } from './orchestration-dispatch-creator'
@@ -205,7 +200,7 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
               dispatchId: started.dispatch.id,
               coordinatorHandle: params.from,
               devMode: params.devMode,
-              timeoutMs: params.timeoutMs ?? 60_000,
+              timeoutMs: readinessTimeoutMs,
               agent,
               launchPreferences: launch.preferences,
               launchReceipt: launch.receipt,
@@ -238,65 +233,24 @@ export const ORCHESTRATION_WORKER_START_METHODS: RpcMethod[] = [
         if (!resolvedWorktree || !terminalHandle) {
           throw new Error('Worker topology did not resolve an agent terminal and worktree.')
         }
-        const setupStage = {
-          db,
-          dispatchId: started.dispatch.id,
-          worktreeId: resolvedWorktree.id,
-          terminalHandle,
-          setup: setupReceipt,
-          effects
-        }
-        if (persistGatedSetupSpawnFailure(setupStage)) {
-          failedStage = 'setup_start'
-          throw new Error('Setup terminal failed to start before the gated agent launch.')
-        }
-        persistWorkerReadinessStage(setupStage)
-
-        failedStage = 'agent_readiness'
-        const wait = await runtime.waitForTerminal(terminalHandle, {
-          condition: 'tui-idle',
-          timeoutMs: readinessTimeoutMs
-        })
-        persistWorkerSetupWaitOutcome({ ...setupStage, wait })
-        if (!wait.satisfied) {
-          if (setupReceipt.state === 'failed') {
-            failedStage = 'setup_wait'
-          }
-          throw new Error(
-            wait.blockedReason
-              ? `Agent startup blocked: ${wait.blockedReason}`
-              : `Agent did not become ready (${wait.status}).`
-          )
-        }
-        failedStage = argvWorktreeLaunch ? failedStage : 'dispatch_input'
-        await attachWorkerAuthority({
-          runtime,
-          db,
-          dispatchId: started.dispatch.id,
-          terminalHandle,
-          worktreeId: resolvedWorktree.id,
-          effects,
-          setupState: setupReceipt.state,
-          terminalOwnership: params.terminal ? 'external' : 'created',
-          task,
-          coordinatorHandle: params.from,
-          devMode: params.devMode,
-          argv: Boolean(argvWorktreeLaunch)
-        })
-        effects.push({
-          kind: 'dispatch_input',
-          role: 'agent',
-          id: terminalHandle,
-          state: 'accepted'
-        })
-        const worker = db.markWorkerDispatchReady(started.dispatch.id, effects)
-        monitorWorkerSetup({
+        const worker = await attachWorkerAndAwaitReadiness({
           runtime,
           db,
           runId: run.id,
           dispatchId: started.dispatch.id,
+          terminalHandle,
+          worktreeId: resolvedWorktree.id,
+          effects,
           setupReceipt,
-          effects
+          terminalOwnership: params.terminal ? 'external' : 'created',
+          task,
+          coordinatorHandle: params.from,
+          devMode: params.devMode,
+          argv: Boolean(argvWorktreeLaunch),
+          timeoutMs: readinessTimeoutMs,
+          onStage: (stage) => {
+            failedStage = stage
+          }
         })
         return {
           runId: run.id,

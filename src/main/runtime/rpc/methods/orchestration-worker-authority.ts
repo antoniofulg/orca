@@ -5,6 +5,7 @@ import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { OrchestrationDb } from '../../orchestration/db'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import {
+  monitorWorkerSetup,
   requireWorkerAuthority,
   type WorkerEffect,
   type WorkerSetupReceipt
@@ -30,6 +31,52 @@ export type ArgvWorktreeLaunch = {
     setupReceipt: WorkerSetupReceipt,
     worktreeId: string
   ) => void
+}
+
+export async function bindAndMarkArgvWorkerReady(args: {
+  runtime: OrcaRuntimeService
+  db: OrchestrationDb
+  runId: string
+  dispatchId: string
+  terminalHandle: string
+  worktreeId: string
+  effects: WorkerEffect[]
+  setupReceipt: WorkerSetupReceipt
+  terminalOwnership: 'created' | 'external'
+  task: { id: string; spec: string }
+  coordinatorHandle: string
+  devMode?: boolean
+}) {
+  await attachWorkerAuthority({
+    runtime: args.runtime,
+    db: args.db,
+    dispatchId: args.dispatchId,
+    terminalHandle: args.terminalHandle,
+    worktreeId: args.worktreeId,
+    effects: args.effects,
+    setupState: args.setupReceipt.state,
+    terminalOwnership: args.terminalOwnership,
+    task: args.task,
+    coordinatorHandle: args.coordinatorHandle,
+    devMode: args.devMode,
+    argv: true
+  })
+  args.effects.push({
+    kind: 'dispatch_input',
+    role: 'agent',
+    id: args.terminalHandle,
+    state: 'accepted'
+  })
+  const worker = args.db.markWorkerDispatchReady(args.dispatchId, args.effects)
+  monitorWorkerSetup({
+    runtime: args.runtime,
+    db: args.db,
+    runId: args.runId,
+    dispatchId: args.dispatchId,
+    setupReceipt: args.setupReceipt,
+    effects: args.effects
+  })
+  return worker
 }
 
 export function createArgvWorktreeLaunch(args: {
