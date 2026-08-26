@@ -21,6 +21,32 @@ export type PtyStartupReplyEchoMatch =
   | { kind: 'partial'; offset: number }
   | { kind: 'none' }
 
+/**
+ * ECHOCTL carets EVERY C0 control, not just ESC — an OSC reply ends in BEL, which a cooked
+ * tty prints as `^G`. Encoding ESC alone left a literal BEL in the needle, so no OSC 10/11
+ * echo ever matched on a cooked tty. Shapes verified against a live pty.
+ */
+function caretEncodeControls(reply: string): string {
+  let out = ''
+  for (const ch of reply) {
+    const code = ch.charCodeAt(0)
+    out += code < 0x20 ? `^${String.fromCharCode(code + 0x40)}` : ch
+  }
+  return out
+}
+
+/**
+ * Readline swallows the escape introducer, rings the bell, and echoes the residue — BEL
+ * replaces `ESC ]` for an OSC reply and `ESC [ ?` for a private DSR. The DSR shape had no
+ * projection at all, so `CSI ? … n` was never matched at a readline prompt.
+ */
+function readlineEchoProjection(reply: string): string | null {
+  if (reply.includes('\x1b]')) {
+    return reply.replaceAll('\x1b]', '\x07').replaceAll('\x1b\\', '')
+  }
+  return reply.startsWith('\x1b[?') ? `\x07${reply.slice(3)}` : null
+}
+
 export function replyEchoProjections(
   reply: string,
   ownerBackend: PtyOwnerBackend
@@ -33,13 +59,12 @@ export function replyEchoProjections(
     // wsl.exe is ConPTY-hosted but its echo shape is unverified; suppress nothing.
     return []
   }
+  const readline = readlineEchoProjection(reply)
   return [
     // The kernel's ECHOCTL caret form — the POSIX default.
-    { needle: reply.replaceAll('\x1b', '^['), holdPartial: true },
-    // Readline rewrites OSC, and echoes it even while the kernel reports ECHO clear.
-    ...(reply.includes('\x1b]')
-      ? [{ needle: reply.replaceAll('\x1b]', '\x07').replaceAll('\x1b\\', ''), holdPartial: true }]
-      : []),
+    { needle: caretEncodeControls(reply), holdPartial: true },
+    // Readline rewrites the reply, and echoes it even while the kernel reports ECHO clear.
+    ...(readline === null ? [] : [{ needle: readline, holdPartial: true }]),
     // A `stty -echoctl` tty echoes the reply verbatim. Complete-match-only, because it
     // starts with ESC — see `holdPartial`. We just wrote these exact bytes, and we are
     // the terminal, so a child emitting the identical span in the same window is not a

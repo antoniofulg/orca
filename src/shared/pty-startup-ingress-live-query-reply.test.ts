@@ -13,7 +13,15 @@ const COLOR_SCHEME_REPLY = mode2031SequenceFor('dark')
 const OSC_COLOR_REPLY = '\x1b]11;rgb:00/00/00\x07'
 const CPR_REPLY = '\x1b[6;1R'
 const DA1_REPLY = '\x1b[?1;2c'
-const caretEcho = (reply: string): string => reply.replaceAll('\x1b', '^[')
+// ECHOCTL carets every C0 control, so an OSC reply's trailing BEL prints as `^G`. This
+// modelled ESC alone, which is not a shape any tty produces — see the live-pty transcript
+// in pty-startup-reply-echo-shapes.test.ts.
+const caretEcho = (reply: string): string =>
+  [...reply]
+    .map((ch) =>
+      ch.charCodeAt(0) < 0x20 ? `^${String.fromCharCode(ch.charCodeAt(0) + 0x40)}` : ch
+    )
+    .join('')
 const readlineEcho = (reply: string): string =>
   reply.replaceAll('\x1b]', '\x07').replaceAll('\x1b\\', '')
 
