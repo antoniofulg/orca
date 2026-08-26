@@ -103,11 +103,15 @@ export class MobileRelaySessionEstablisher {
       `confirm-${encodeBase64Url(args.randomBytes(16))}`
     )
     try {
-      // Why: if an authenticated non-relay session appears while this dial is in
-      // flight (the grace race), withdraw instead of cutting over the winner.
-      await args.logical.migrateTo(session, 'relay', undefined, () => directWon(args.logical))
+      // Why: backgrounding or a direct winner withdraws this dial before cutover.
+      await args.logical.migrateTo(
+        session,
+        'relay',
+        undefined,
+        () => !args.isActive() || directWon(args.logical)
+      )
     } catch (error) {
-      if (directWon(args.logical)) {
+      if (!args.isActive() || directWon(args.logical)) {
         return { ok: false, error: new RelayDialAbortedError() }
       }
       return { ok: false, error: session.getFailure() ?? toError(error) }
