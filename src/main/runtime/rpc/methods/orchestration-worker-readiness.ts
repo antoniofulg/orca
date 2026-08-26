@@ -1,6 +1,7 @@
 import type { OrchestrationDb } from '../../orchestration/db'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import { attachWorkerAuthority, bindAndMarkArgvWorkerReady } from './orchestration-worker-authority'
+import { publishWorkerStartupBlocked } from './orchestration-worker-argv-start'
 import {
   monitorWorkerSetup,
   type WorkerEffect,
@@ -75,6 +76,21 @@ export async function attachWorkerAndAwaitReadiness(args: {
       args.onStage('setup_wait')
     }
     if (worker && ['succeeded', 'failed'].includes(worker.state)) {
+      return worker
+    }
+    if (
+      args.argv &&
+      worker?.state === 'ready' &&
+      args.setupReceipt.startupPolicy !== 'wait-for-setup'
+    ) {
+      publishWorkerStartupBlocked({
+        runtime: args.runtime,
+        db: args.db,
+        runId: args.runId,
+        dispatchId: args.dispatchId,
+        terminalHandle: args.terminalHandle,
+        blockedReason: wait.blockedReason ?? 'Terminal readiness wait was not satisfied.'
+      })
       return worker
     }
     throw new Error(

@@ -22,15 +22,52 @@ export type ArgvWorkerTerminal = {
 }
 
 export type ArgvWorktreeLaunch = {
-  startupPrompt: string
   startupLaunchToken: string
   startupPreAllocatedHandle: string
+  buildStartupPrompt: (cliCommand: 'orca' | 'orca-ide') => string
   assertTerminalHandle: (terminalHandle: string) => void
   persistAgentTerminalOwnership: (
     terminal: ArgvWorkerTerminal,
     setupReceipt: WorkerSetupReceipt,
     worktreeId: string
   ) => void
+}
+
+export function createArgvLaunchCredentials(args: {
+  runtime: OrcaRuntimeService
+  db: OrchestrationDb
+  task: { id: string; spec: string }
+  dispatchId: string
+  coordinatorHandle: string
+  devMode?: boolean
+}): Pick<
+  ArgvWorktreeLaunch,
+  'startupLaunchToken' | 'startupPreAllocatedHandle' | 'buildStartupPrompt'
+> {
+  const preAllocatedHandle = args.runtime.createPreAllocatedTerminalHandle()
+  const launchToken = randomUUID()
+  args.db.commitDispatchLaunchTokenHash(
+    args.dispatchId,
+    createHash('sha256').update(launchToken).digest('hex')
+  )
+  const dispatchCapability = args.db.mintStartingWorkerCapability({
+    dispatchId: args.dispatchId
+  })
+  return {
+    startupLaunchToken: launchToken,
+    startupPreAllocatedHandle: preAllocatedHandle,
+    buildStartupPrompt: (cliCommand) =>
+      buildDispatchPreamble({
+        taskId: args.task.id,
+        dispatchId: args.dispatchId,
+        taskSpec: args.task.spec,
+        coordinatorHandle: args.coordinatorHandle,
+        workerHandle: preAllocatedHandle,
+        dispatchCapability,
+        devMode: args.devMode,
+        cliCommand
+      })
+  }
 }
 
 export async function bindAndMarkArgvWorkerReady(args: {
@@ -88,33 +125,13 @@ export function createArgvWorktreeLaunch(args: {
   devMode?: boolean
   effects: WorkerEffect[]
 }): ArgvWorktreeLaunch {
-  const preAllocatedHandle = args.runtime.createPreAllocatedTerminalHandle()
-  const launchToken = randomUUID()
-  args.db.commitDispatchLaunchTokenHash(
-    args.dispatchId,
-    createHash('sha256').update(launchToken).digest('hex')
-  )
-  const dispatchCapability = args.db.mintStartingWorkerCapability({
-    dispatchId: args.dispatchId
-  })
-  const startupPrompt = buildDispatchPreamble({
-    taskId: args.task.id,
-    dispatchId: args.dispatchId,
-    taskSpec: args.task.spec,
-    coordinatorHandle: args.coordinatorHandle,
-    workerHandle: preAllocatedHandle,
-    dispatchCapability,
-    devMode: args.devMode,
-    cliCommand: args.runtime.getTerminalOrchestrationCliCommand(args.coordinatorHandle)
-  })
+  const credentials = createArgvLaunchCredentials(args)
   return {
-    startupPrompt,
-    startupLaunchToken: launchToken,
-    startupPreAllocatedHandle: preAllocatedHandle,
+    ...credentials,
     assertTerminalHandle: (terminalHandle) => {
-      if (terminalHandle !== preAllocatedHandle) {
+      if (terminalHandle !== credentials.startupPreAllocatedHandle) {
         throw new Error(
-          `Worker terminal adopted handle ${terminalHandle} instead of the pre-allocated ${preAllocatedHandle}.`
+          `Worker terminal adopted handle ${terminalHandle} instead of the pre-allocated ${credentials.startupPreAllocatedHandle}.`
         )
       }
     },
@@ -190,9 +207,10 @@ export function resolveArgvWorktreeLaunch(args: {
   if (!args.creationWorktree || !args.agent) {
     return undefined
   }
-  return TUI_AGENT_CONFIG[args.agent].promptInjectionMode === 'argv'
-    ? createArgvWorktreeLaunch(args)
-    : undefined
+  if (TUI_AGENT_CONFIG[args.agent].promptInjectionMode !== 'argv') {
+    return undefined
+  }
+  return createArgvWorktreeLaunch(args)
 }
 
 export async function attachWorkerAuthority(args: {

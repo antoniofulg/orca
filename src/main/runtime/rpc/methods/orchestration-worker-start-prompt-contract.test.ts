@@ -162,6 +162,7 @@ async function createPromptContractHarness(
     } as never
   })
   vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
+  vi.spyOn(runtime, 'getWorktreeOrchestrationCliCommand').mockResolvedValue('orca')
 
   return {
     db,
@@ -340,13 +341,14 @@ describe('orchestration worker-start prompt contract', () => {
     }
     const dispatchId = (response.result as { dispatchId: string }).dispatchId
     const startup = vi.mocked(harness.runtime.createManagedWorktree).mock.calls[0]?.[0]
+    const startupPrompt = await startup?.startupPromptFactory?.('repo::created')
     expect(startup).toMatchObject({
       startupAgent: 'codex',
-      startupPrompt: expect.stringMatching(/--dispatch-capability dcap_[A-Za-z0-9_-]+/),
       startupLaunchToken: expect.any(String),
       startupPreAllocatedHandle: harness.handle,
       lineage: { parentWorktree: 'repo::parent', noParent: false }
     })
+    expect(startupPrompt).toMatch(/--dispatch-capability dcap_[A-Za-z0-9_-]+/)
     expect(harness.runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
     expect(waitForTerminal).toHaveBeenCalledTimes(1)
     expect(waitForTerminal).toHaveBeenCalledWith(harness.handle, {

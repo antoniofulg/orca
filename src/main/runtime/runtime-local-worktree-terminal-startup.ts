@@ -107,7 +107,6 @@ export async function startRuntimeLocalWorktreeTerminals(args: {
         ...(request.startupPreAllocatedHandle
           ? { preAllocatedHandle: request.startupPreAllocatedHandle }
           : {}),
-        ...(request.startupPrompt ? { agentPrompt: request.startupPrompt } : {}),
         ...(sequencedStartup.viewMode ? { viewMode: sequencedStartup.viewMode } : {}),
         startupCommandDelivery: sequencedStartup.startupCommandDelivery,
         telemetry: sequencedStartup.telemetry,

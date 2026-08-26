@@ -1,8 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { TuiAgent } from '../../../../shared/tui-agent'
 import type { AgentLaunchPreferences } from '../../../../shared/agent-session-host-authority'
-import { buildDispatchPreamble } from '../../orchestration/preamble'
 import type { OrchestrationDb } from '../../orchestration/db'
 import type { OrcaRuntimeService } from '../../orca-runtime'
 import {
@@ -16,7 +14,10 @@ import {
   persistWorkerReadinessStage
 } from './orchestration-worker-setup-gate'
 import type { OrchestrationWorkerLaunchReceipt } from './orchestration-worker-launch-preferences'
-import { persistArgvWorkerTerminalOwnership } from './orchestration-worker-authority'
+import {
+  createArgvLaunchCredentials,
+  persistArgvWorkerTerminalOwnership
+} from './orchestration-worker-authority'
 
 // Why: argv agents receive the preamble and launch token in the spawn command;
 // binding proves the returned pane is the exact process with no paste race.
@@ -39,30 +40,14 @@ export async function startArgvWorkerDispatch(args: {
   onStage: (stage: string) => void
 }): Promise<Record<string, unknown>> {
   const { runtime, db, effects } = args
-  const preAllocatedHandle = runtime.createPreAllocatedTerminalHandle()
-  const workerLaunchToken = randomUUID()
-  db.commitDispatchLaunchTokenHash(
-    args.dispatchId,
-    createHash('sha256').update(workerLaunchToken).digest('hex')
-  )
-  const capability = db.mintStartingWorkerCapability({ dispatchId: args.dispatchId })
   const cliCommand = await runtime.getWorktreeOrchestrationCliCommand(args.worktreeId)
-  const preamble = buildDispatchPreamble({
-    taskId: args.task.id,
-    dispatchId: args.dispatchId,
-    taskSpec: args.task.spec,
-    coordinatorHandle: args.coordinatorHandle,
-    workerHandle: preAllocatedHandle,
-    dispatchCapability: capability,
-    devMode: args.devMode,
-    cliCommand
-  })
+  const credentials = createArgvLaunchCredentials(args)
   const terminal = await runtime.createTerminal(`id:${args.worktreeId}`, {
     startupAgent: args.agent,
     ...(args.launchPreferences ? { launchPreferences: args.launchPreferences } : {}),
-    preAllocatedHandle,
-    launchToken: workerLaunchToken,
-    agentPrompt: preamble,
+    preAllocatedHandle: credentials.startupPreAllocatedHandle,
+    launchToken: credentials.startupLaunchToken,
+    agentPrompt: credentials.buildStartupPrompt(cliCommand),
     title: `worker-${args.task.id}`,
     // Background worker: do not pull the sidebar to its workspace.
     surfaceOwner: false
@@ -86,9 +71,9 @@ export async function startArgvWorkerDispatch(args: {
   }
   args.onStage('authority_bind')
   // The preamble names preAllocatedHandle; a substituted handle is unsafe.
-  if (terminal.handle !== preAllocatedHandle) {
+  if (terminal.handle !== credentials.startupPreAllocatedHandle) {
     throw new Error(
-      `Worker terminal adopted handle ${terminal.handle} instead of the pre-allocated ${preAllocatedHandle}.`
+      `Worker terminal adopted handle ${terminal.handle} instead of the pre-allocated ${credentials.startupPreAllocatedHandle}.`
     )
   }
   if (persistGatedSetupSpawnFailure(setupStage)) {
@@ -145,6 +130,30 @@ export async function startArgvWorkerDispatch(args: {
   }
 }
 
+export function publishWorkerStartupBlocked(args: {
+  runtime: OrcaRuntimeService
+  db: OrchestrationDb
+  runId: string
+  dispatchId: string
+  terminalHandle: string
+  blockedReason: string
+}): void {
+  const message = args.db.insertMessage({
+    runId: args.runId,
+    from: `dispatch:${args.dispatchId}`,
+    to: `run:${args.runId}`,
+    subject: `Worker ${args.dispatchId} startup blocked: ${args.blockedReason}`,
+    type: 'status',
+    priority: 'high',
+    payload: JSON.stringify({
+      dispatchId: args.dispatchId,
+      blockedReason: args.blockedReason,
+      terminalHandle: args.terminalHandle
+    })
+  })
+  args.runtime.notifyMessageArrived(message.to_handle, message.type)
+}
+
 // Why: createTerminal resolution is the identity barrier for a freshly
 // spawned worker — handle registration, launch token and paneKey are stored
 // before it resolves. The bounded retry covers only create variants whose
@@ -185,20 +194,14 @@ function monitorArgvStartupBlocked(args: {
       if (!wait.blockedReason) {
         return
       }
-      const message = args.db.insertMessage({
+      publishWorkerStartupBlocked({
+        runtime: args.runtime,
+        db: args.db,
         runId: args.runId,
-        from: `dispatch:${args.dispatchId}`,
-        to: `run:${args.runId}`,
-        subject: `Worker ${args.dispatchId} startup blocked: ${wait.blockedReason}`,
-        type: 'status',
-        priority: 'high',
-        payload: JSON.stringify({
-          dispatchId: args.dispatchId,
-          blockedReason: wait.blockedReason,
-          terminalHandle: args.terminalHandle
-        })
+        dispatchId: args.dispatchId,
+        terminalHandle: args.terminalHandle,
+        blockedReason: wait.blockedReason
       })
-      args.runtime.notifyMessageArrived(message.to_handle, message.type)
     })
     .catch(() => undefined)
 }

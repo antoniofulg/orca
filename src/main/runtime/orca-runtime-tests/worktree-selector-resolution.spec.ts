@@ -407,13 +407,23 @@ describe('OrcaRuntimeService', () => {
     vi.mocked(listWorktrees)
       .mockImplementationOnce(() => staleScan.promise)
       .mockResolvedValueOnce([createdWorktree])
-      .mockResolvedValueOnce([...MOCK_GIT_WORKTREES, createdWorktree])
+      // Why: the deferred startup prompt resolves the fresh worktree during create,
+      // so every scan after the stale one must already see it.
+      .mockResolvedValue([...MOCK_GIT_WORKTREES, createdWorktree])
 
     const staleLookup = runtime.showManagedWorktree(TEST_WORKTREE_ID)
     const result = await runtime.createManagedWorktree({
       repoSelector: 'id:repo-1',
       name: 'nautilus',
-      nameWasGenerated: true
+      nameWasGenerated: true,
+      startupAgent: 'codex',
+      startupPromptFactory: async (worktreeId) => {
+        const resolved = await runtime.showManagedWorktree(`id:${worktreeId}`)
+        expect(resolved.id).toBe(worktreeId)
+        const cliCommand = await runtime.getWorktreeOrchestrationCliCommand(worktreeId)
+        expect(cliCommand).toBe('orca')
+        return `worker startup via ${cliCommand}`
+      }
     })
     const freshLookup = runtime.showManagedWorktree(result.worktree.id)
 
