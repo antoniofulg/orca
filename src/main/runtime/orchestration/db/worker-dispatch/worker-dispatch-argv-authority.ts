@@ -162,7 +162,26 @@ export function bindStartingWorkerAuthority(
         `Dispatch ${params.dispatchId} is not starting.`
       )
     }
-    if (params.terminalOwnership && !this.getWorkerTerminalResourceByOwner(params.dispatchId)) {
+    const existingResource = this.getWorkerTerminalResourceByOwner(params.dispatchId)
+    if (existingResource) {
+      if (
+        existingResource.terminal_handle !== params.handle ||
+        existingResource.ownership_state !== 'owned'
+      ) {
+        throw new OrchestrationError(
+          'request_mismatch',
+          `Dispatch ${params.dispatchId} terminal resource does not match the binding pane.`
+        )
+      }
+      this.bindWorkerTerminalResourceStatement({
+        dispatchId: params.dispatchId,
+        worktreeId: params.worktreeId,
+        terminalHandle: params.handle,
+        paneKey: params.paneKey,
+        processIncarnation: params.processIncarnation,
+        hostScope: params.hostScope ?? null
+      })
+    } else if (params.terminalOwnership) {
       if (params.terminalOwnership === 'created') {
         this.createWorkerTerminalResourceStatement({
           dispatchId: params.dispatchId,

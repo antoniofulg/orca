@@ -25,13 +25,34 @@ describe('orchestration RPC methods', () => {
     return h.call(name, params, ctx)
   }
 
+  function ownedResourceCount(dispatchId: string): number {
+    const raw = (
+      db as unknown as {
+        db: { prepare: (sql: string) => { get: (...args: unknown[]) => { count: number } } }
+      }
+    ).db
+    return raw
+      .prepare(
+        `SELECT COUNT(*) AS count
+             FROM worker_terminal_resources
+            WHERE owner_dispatch_id = ?`
+      )
+      .get(dispatchId).count
+  }
+
   describe('composed workers', () => {
-    function mockCurrentWorkerStart(options?: { ready?: boolean; terminalWarning?: string }): void {
+    function mockCurrentWorkerStart(options?: {
+      ready?: boolean
+      terminalWarning?: string
+      terminalHandle?: string
+      authorityLaunchTokenHash?: string
+    }): void {
       // Why: the argv worker-start path pre-allocates the handle and mints the
       // launch token BEFORE createTerminal. Real createTerminal adopts both;
       // a mock that ignored them would trip the handle-substitution guard and
       // the launch-token bind guard, testing a runtime that cannot exist.
       let workerHandle = 'term_worker'
+      let actualWorkerHandle = 'term_worker'
       let workerLaunchTokenHash: string | null = null
       vi.mocked(runtime.getTerminalPaneKey).mockImplementation((handle) =>
         handle === 'term_coord'
@@ -52,11 +73,12 @@ describe('orchestration RPC methods', () => {
       } as never)
       vi.spyOn(runtime, 'createTerminal').mockImplementation(async (_selector, opts) => {
         workerHandle = opts?.preAllocatedHandle ?? 'term_worker'
+        actualWorkerHandle = options?.terminalHandle ?? workerHandle
         workerLaunchTokenHash = opts?.launchToken
           ? createHash('sha256').update(opts.launchToken).digest('hex')
           : null
         return {
-          handle: workerHandle,
+          handle: actualWorkerHandle,
           worktreeId: 'repo::worktree',
           title: 'worker',
           ...(options?.terminalWarning
@@ -65,15 +87,15 @@ describe('orchestration RPC methods', () => {
         } as never
       })
       vi.spyOn(runtime, 'getOrchestrationDispatchAuthority').mockImplementation((handle) =>
-        handle === workerHandle && workerLaunchTokenHash
+        handle === actualWorkerHandle && workerLaunchTokenHash
           ? ({
               runtimeId: runtime.getRuntimeId(),
-              terminalHandle: workerHandle,
+              terminalHandle: actualWorkerHandle,
               ptyId: 'pty_worker',
               worktreeId: 'repo::worktree',
               paneKey: 'tab_worker:leaf_worker',
               processIncarnation: 'runtime_test:term_worker:1',
-              launchTokenHash: workerLaunchTokenHash,
+              launchTokenHash: options?.authorityLaunchTokenHash ?? workerLaunchTokenHash,
               hostScope: null
             } as never)
           : null
@@ -89,7 +111,7 @@ describe('orchestration RPC methods', () => {
           }) as never
       )
       vi.mocked(runtime.getTerminalProcessIncarnation).mockImplementation((handle) =>
-        handle === workerHandle ? 'runtime_test:term_worker:1' : null
+        handle === actualWorkerHandle ? 'runtime_test:term_worker:1' : null
       )
       vi.spyOn(runtime, 'getTerminalOrchestrationCliCommand').mockReturnValue('orca')
       vi.spyOn(runtime, 'getWorktreeOrchestrationCliCommand').mockResolvedValue('orca')
@@ -182,8 +204,12 @@ describe('orchestration RPC methods', () => {
           expect.objectContaining({ kind: 'dispatch_input', state: 'accepted' })
         ])
       )
+      expect(
+        result.effects.filter((effect) => effect.kind === 'terminal' && effect.role === 'agent')
+      ).toHaveLength(1)
       expect(db.getTask(task.id)?.status).toBe('dispatched')
       expect(db.getWorkerDispatch(result.dispatchId)?.state).toBe('ready')
+      expect(ownedResourceCount(result.dispatchId)).toBe(1)
       // Why: dispatching a worker is background work — surfaceOwner:false adopts
       // the tab without scrolling the sidebar to the worker's workspace.
       expect(runtime.createTerminal).toHaveBeenCalledWith('id:repo::worktree', {
@@ -197,6 +223,93 @@ describe('orchestration RPC methods', () => {
         surfaceOwner: false
       })
       expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
+    })
+
+    it('persists the substituted argv terminal before rejecting its identity', async () => {
+      setup()
+      mockCurrentWorkerStart({ terminalHandle: 'term_adopted' })
+      const task = db.createTask({ spec: 'reject substituted worker terminal' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as {
+        dispatchId: string
+        state: string
+        failedStage: string
+        effects: { kind: string; role?: string; action?: string; id?: string }[]
+        residualResources: { kind: string; role?: string; action?: string; id?: string }[]
+      }
+
+      expect(result).toMatchObject({
+        state: 'failed',
+        failedStage: 'authority_bind'
+      })
+      expect(result.effects).toContainEqual(
+        expect.objectContaining({
+          kind: 'terminal',
+          role: 'agent',
+          action: 'created',
+          id: 'term_adopted'
+        })
+      )
+      expect(result.residualResources).toContainEqual(
+        expect.objectContaining({
+          kind: 'terminal',
+          role: 'agent',
+          action: 'created',
+          id: 'term_adopted'
+        })
+      )
+      expect(db.getWorkerTerminalResourceByOwner(result.dispatchId)).toMatchObject({
+        ownership_state: 'owned',
+        release_state: 'not_requested',
+        terminal_handle: 'term_adopted',
+        pane_key: 'tab_worker:leaf_worker',
+        process_incarnation: 'runtime_test:term_worker:1'
+      })
+      expect(ownedResourceCount(result.dispatchId)).toBe(1)
+    })
+
+    it('retains terminal ownership when authority binding fails after creation', async () => {
+      setup()
+      mockCurrentWorkerStart({ authorityLaunchTokenHash: 'wrong-launch-token-hash' })
+      const task = db.createTask({ spec: 'retain worker after bind rejection' })
+
+      const result = (await call('orchestration.workerStart', {
+        task: task.id,
+        from: 'term_coord',
+        agent: 'codex'
+      })) as {
+        dispatchId: string
+        state: string
+        failedStage: string
+        effects: { kind: string; role?: string; action?: string; id?: string }[]
+        residualResources: { kind: string; role?: string; action?: string; id?: string }[]
+      }
+
+      expect(result).toMatchObject({
+        state: 'failed',
+        failedStage: 'authority_bind'
+      })
+      const terminalEffect = result.effects.find(
+        (effect) => effect.kind === 'terminal' && effect.role === 'agent'
+      )
+      expect(terminalEffect?.id).toBeTruthy()
+      expect(result.effects).toContainEqual(
+        expect.objectContaining({ kind: 'terminal', role: 'agent', id: terminalEffect?.id })
+      )
+      expect(result.residualResources).toContainEqual(
+        expect.objectContaining({ kind: 'terminal', role: 'agent', id: terminalEffect?.id })
+      )
+      expect(db.getWorkerTerminalResourceByOwner(result.dispatchId)).toMatchObject({
+        ownership_state: 'owned',
+        terminal_handle: terminalEffect?.id,
+        pane_key: 'tab_worker:leaf_worker',
+        process_incarnation: 'runtime_test:term_worker:1'
+      })
+      expect(ownedResourceCount(result.dispatchId)).toBe(1)
     })
 
     it('embeds the WSL CLI name before the worker pane exists', async () => {
@@ -484,13 +597,23 @@ describe('orchestration RPC methods', () => {
         task: task.id,
         from: 'term_coord',
         agent: 'codex'
-      })) as { state: string; failedStage: string; residualResources: unknown[] }
+      })) as {
+        dispatchId: string
+        state: string
+        failedStage: string
+        effects: { kind: string }[]
+        residualResources: unknown[]
+      }
 
       expect(result).toMatchObject({
         state: 'failed',
         failedStage: 'terminal_create',
         residualResources: []
       })
+      expect(result.effects).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: 'terminal' })])
+      )
+      expect(ownedResourceCount(result.dispatchId)).toBe(0)
       expect(runtime.sendTerminalAgentPrompt).not.toHaveBeenCalled()
     })
 

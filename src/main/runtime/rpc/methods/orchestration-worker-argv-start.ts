@@ -83,6 +83,35 @@ export async function startArgvWorkerDispatch(args: {
     surface: terminal.surface,
     warning: terminal.warning
   })
+  const terminalAuthority = runtime.getOrchestrationDispatchAuthority(terminal.handle)
+  const setupStage = {
+    db,
+    dispatchId: args.dispatchId,
+    worktreeId: args.worktreeId,
+    terminalHandle: terminal.handle,
+    setup: args.setupReceipt,
+    effects
+  }
+  // Why: createTerminal is the ownership boundary. Persist the exact returned
+  // handle and its releasable resource before any identity, setup, or authority
+  // check can reject the start and hide a live agent from its failure receipt.
+  persistWorkerReadinessStage(setupStage)
+  if (!db.getWorkerTerminalResourceByOwner(args.dispatchId)) {
+    db.createWorkerTerminalResourceStatement({
+      dispatchId: args.dispatchId,
+      worktreeId: args.worktreeId,
+      terminalHandle: terminal.handle,
+      paneKey:
+        terminal.paneKey ??
+        terminalAuthority?.paneKey ??
+        runtime.getTerminalPaneKey(terminal.handle),
+      processIncarnation:
+        terminalAuthority?.processIncarnation ??
+        runtime.getTerminalProcessIncarnation(terminal.handle),
+      hostScope: terminalAuthority?.hostScope ? JSON.stringify(terminalAuthority.hostScope) : null,
+      ownership: 'owned'
+    })
+  }
   args.onStage('authority_bind')
   // Why: adoption paths can substitute a canonical surface handle
   // (agentSessionEnsure/stablePaneOwner). The preamble already names
@@ -92,14 +121,6 @@ export async function startArgvWorkerDispatch(args: {
     throw new Error(
       `Worker terminal adopted handle ${terminal.handle} instead of the pre-allocated ${preAllocatedHandle}.`
     )
-  }
-  const setupStage = {
-    db,
-    dispatchId: args.dispatchId,
-    worktreeId: args.worktreeId,
-    terminalHandle: terminal.handle,
-    setup: args.setupReceipt,
-    effects
   }
   if (persistGatedSetupSpawnFailure(setupStage)) {
     args.onStage('setup_start')
