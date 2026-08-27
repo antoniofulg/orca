@@ -17,7 +17,12 @@ describe('argv worker authority: mint before spawn, bind after', () => {
   function startDispatch() {
     db = new OrchestrationDb(':memory:')
     const task = db.createTask({ spec: 'argv worker' })
-    const started = db.createStartingWorkerDispatch({ taskId: task.id, startOptions: {} })
+    const started = db.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: task.id,
+      startOptions: {}
+    })
     return { d: db, dispatchId: started.dispatch.id }
   }
 
@@ -189,7 +194,12 @@ describe('argv worker authority: mint before spawn, bind after', () => {
     d.markWorkerDispatchReady(dispatchId)
 
     const rival = d.createTask({ spec: 'rival argv worker' })
-    const second = d.createStartingWorkerDispatch({ taskId: rival.id, startOptions: {} })
+    const second = d.createStartingWorkerDispatch({
+      creator: { kind: 'system' },
+      maxDepth: Number.MAX_SAFE_INTEGER,
+      taskId: rival.id,
+      startOptions: {}
+    })
     d.commitDispatchLaunchTokenHash(second.dispatch.id, TOKEN_HASH)
     d.mintStartingWorkerCapability({ dispatchId: second.dispatch.id })
     expect(() => d.bindStartingWorkerAuthority(bindParams(second.dispatch.id))).toThrow(
