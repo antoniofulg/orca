@@ -33,10 +33,21 @@ ${FAKE_AGENT_PASTE_END_SCANNER_SOURCE}
 const argvPreamble = process.argv.slice(2).find((argument) =>
   argument.includes('You are working inside Orca, a multi-agent IDE. You are a dispatched worker.')
 )
-process.stdout.write('\\u001b]0;Codex Ready\\u0007OpenAI Codex\\nmodel: e2e\\ndirectory: e2e\\n')
 if (argvPreamble) {
-  capability = argvPreamble.match(/--dispatch-capability (dcap_[A-Za-z0-9_-]+)/)?.[1] || null
+  const argvCapability = argvPreamble.match(/--dispatch-capability (dcap_[A-Za-z0-9_-]+)/)?.[1] || null
+  const hasTaskMarker =
+    /Your task ID is: \\S+/.test(argvPreamble) && /--task-id \\S+/.test(argvPreamble)
+  const hasDispatchMarker = /--dispatch-id \\S+/.test(argvPreamble)
+  const hasTaskSection = argvPreamble.includes('=== TASK ===')
+  if (!argvCapability || !hasTaskMarker || !hasDispatchMarker || !hasTaskSection) {
+    process.stderr.write('argv worker preamble is incomplete\\n')
+    process.exit(3)
+  }
+  capability = argvCapability
   acknowledged = true
+}
+process.stdout.write('\\u001b]0;Codex Ready\\u0007OpenAI Codex\\nmodel: e2e\\ndirectory: e2e\\n')
+if (acknowledged) {
   process.stdout.write('\\u001b]0;Codex Working\\u0007ACK\\n')
   setTimeout(() => process.stdout.write('\\u001b]0;Codex Ready\\u0007'), 10)
 }

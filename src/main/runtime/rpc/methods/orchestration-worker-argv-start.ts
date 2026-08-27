@@ -194,14 +194,51 @@ function monitorArgvStartupBlocked(args: {
       if (wait.satisfied) {
         return
       }
+      if (!isReadyWorkerDispatch(args.db, args.dispatchId)) {
+        return
+      }
       publishWorkerStartupBlocked({
         runtime: args.runtime,
         db: args.db,
         runId: args.runId,
         dispatchId: args.dispatchId,
         terminalHandle: args.terminalHandle,
-        blockedReason: wait.blockedReason ?? 'Terminal readiness wait was not satisfied.'
+        blockedReason: readinessFailureReason(wait)
       })
     })
-    .catch(() => undefined)
+    .catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error)
+      if (reason === 'request_aborted' || reason === 'terminal_handle_stale') {
+        return
+      }
+      if (!isReadyWorkerDispatch(args.db, args.dispatchId)) {
+        return
+      }
+      publishWorkerStartupBlocked({
+        runtime: args.runtime,
+        db: args.db,
+        runId: args.runId,
+        dispatchId: args.dispatchId,
+        terminalHandle: args.terminalHandle,
+        blockedReason: `Terminal readiness wait failed: ${reason}`
+      })
+    })
+}
+
+function isReadyWorkerDispatch(db: OrchestrationDb, dispatchId: string): boolean {
+  return (
+    db.getDispatchContextById(dispatchId)?.status === 'dispatched' &&
+    db.getWorkerDispatch(dispatchId)?.state === 'ready'
+  )
+}
+
+function readinessFailureReason(
+  wait: Awaited<ReturnType<OrcaRuntimeService['waitForTerminal']>>
+): string {
+  if (wait.blockedReason) {
+    return wait.blockedReason
+  }
+  return wait.status === 'exited'
+    ? 'Terminal readiness wait failed: terminal_exited'
+    : 'Terminal readiness wait was not satisfied.'
 }
