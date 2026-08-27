@@ -9,10 +9,7 @@ import {
   type WorkerEffect,
   type WorkerSetupReceipt
 } from './orchestration-worker-topology'
-import {
-  persistGatedSetupSpawnFailure,
-  persistWorkerReadinessStage
-} from './orchestration-worker-setup-gate'
+import { persistGatedSetupSpawnFailure } from './orchestration-worker-setup-gate'
 import type { OrchestrationWorkerLaunchReceipt } from './orchestration-worker-launch-preferences'
 import {
   createArgvLaunchCredentials,
@@ -80,7 +77,6 @@ export async function startArgvWorkerDispatch(args: {
     args.onStage('setup_start')
     throw new Error('Setup terminal failed to start before the gated agent launch.')
   }
-  persistWorkerReadinessStage(setupStage)
   const boundAuthority = await requireWorkerAuthorityAfterSpawn(runtime, terminal.handle)
   db.bindStartingWorkerAuthority({
     dispatchId: args.dispatchId,
