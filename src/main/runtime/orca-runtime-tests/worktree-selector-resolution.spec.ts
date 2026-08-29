@@ -412,12 +412,14 @@ describe('OrcaRuntimeService', () => {
       .mockResolvedValue([...MOCK_GIT_WORKTREES, createdWorktree])
 
     const staleLookup = runtime.showManagedWorktree(TEST_WORKTREE_ID)
+    let startupPromptFactoryRan = false
     const result = await runtime.createManagedWorktree({
       repoSelector: 'id:repo-1',
       name: 'nautilus',
       nameWasGenerated: true,
       startupAgent: 'codex',
       startupPromptFactory: async (worktreeId) => {
+        startupPromptFactoryRan = true
         const resolved = await runtime.showManagedWorktree(`id:${worktreeId}`)
         expect(resolved.id).toBe(worktreeId)
         const cliCommand = await runtime.getWorktreeOrchestrationCliCommand(worktreeId)
@@ -425,6 +427,7 @@ describe('OrcaRuntimeService', () => {
         return `worker startup via ${cliCommand}`
       }
     })
+    expect(startupPromptFactoryRan).toBe(true)
     const freshLookup = runtime.showManagedWorktree(result.worktree.id)
 
     staleScan.resolve(MOCK_GIT_WORKTREES)

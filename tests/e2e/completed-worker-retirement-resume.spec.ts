@@ -487,6 +487,7 @@ for (const closeMode of ['terminal-close-cli', 'worker-release'] as const) {
     await expect
       .poll(() => orcaPage.evaluate(() => window.__store?.getState().activeWorktreeId))
       .toBe(targetWorktreeId)
+    await ensureTerminalVisible(orcaPage)
     await waitForActiveTerminalManager(orcaPage)
     await waitForActivePanePtyId(orcaPage)
     const activatedPane = await waitForActivePaneHookDescriptor(orcaPage)
